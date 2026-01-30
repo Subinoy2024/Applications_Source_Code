@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "PetClinic EC2 (No Docker) with Java17 + Nginx + systemd"
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+  AmiId:
+    Type: AWS::EC2::Image::Id
+  InstanceType:
+    Type: String
+    Default: t2.micro
+  AllowedSshCidr:
+    Type: String
+    Default: "0.0.0.0/0"
+
+Resources:
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH and HTTP
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSshCidr
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: petclinic-sg
+
+  AppInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref AppSecurityGroup
+      Tags:
+        - Key: Name
+          Value: petclinic-ec2
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+
+          apt-get update -y
+          apt-get install -y openjdk-17-jre nginx
+
+          useradd -r -s /bin/false petclinic || true
+          mkdir -p /opt/petclinic
+          chown -R petclinic:petclinic /opt/petclinic
+
+          cat >/etc/systemd/system/petclinic.service <<'EOF'
+          [Unit]
+          Description=Spring PetClinic Application
+          After=network.target
+
+          [Service]
+          User=petclinic
+          Group=petclinic
+          WorkingDirectory=/opt/petclinic
+          ExecStart=/usr/bin/java -jar /opt/petclinic/petclinic.jar
+          SuccessExitStatus=143
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          systemctl daemon-reload
+          systemctl enable petclinic
+
+          cat >/etc/nginx/sites-available/petclinic <<'EOF'
+          server {
+              listen 80;
+              server_name _;
+              location / {
+                  proxy_pass http://127.0.0.1:8080;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+          EOF
+
+          rm -f /etc/nginx/sites-enabled/default
+          ln -sf /etc/nginx/sites-available/petclinic /etc/nginx/sites-enabled/petclinic
+          nginx -t
+          systemctl enable --now nginx
+
+Outputs:
+  AppPublicIp:
+    Value: !GetAtt AppInstance.PublicIp
+  AppUrl:
+    Value: !Sub "http://${AppInstance.PublicIp}/"
