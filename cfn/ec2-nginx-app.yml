@@ -1,28 +1,95 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "PetClinic EC2 (No Docker) with Java17 + Nginx + systemd"
+Description: "PetClinic: CFN creates VPC/Subnet/IGW/Routes/SG/EC2 + Java17 + Nginx + systemd (No Docker)"
 
 Parameters:
-  VpcId:
-    Type: AWS::EC2::VPC::Id
-  SubnetId:
-    Type: AWS::EC2::Subnet::Id
-  KeyName:
-    Type: AWS::EC2::KeyPair::KeyName
-  AmiId:
-    Type: AWS::EC2::Image::Id
-  InstanceType:
+  VpcCidr:
     Type: String
-    Default: t2.micro
+    Default: "192.168.0.0/22"
+    Description: "CIDR for new VPC"
+
+  PublicSubnetCidr:
+    Type: String
+    Default: "192.168.0.0/22"
+    Description: "CIDR for public subnet inside VPC"
+
   AllowedSshCidr:
     Type: String
     Default: "0.0.0.0/0"
+    Description: "Your public IP/32 recommended for SSH"
+
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: "Existing EC2 KeyPair name (used by Jenkins for SSH deploy)"
+
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Description: "Ubuntu AMI ID (same region as AWS_REGION)"
+
+  InstanceType:
+    Type: String
+    Default: t2.micro
 
 Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: petclinic-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: petclinic-igw
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnetCidr
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: petclinic-public-subnet
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: petclinic-public-rt
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
   AppSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Allow SSH and HTTP
-      VpcId: !Ref VpcId
+      VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 22
@@ -42,7 +109,7 @@ Resources:
       ImageId: !Ref AmiId
       InstanceType: !Ref InstanceType
       KeyName: !Ref KeyName
-      SubnetId: !Ref SubnetId
+      SubnetId: !Ref PublicSubnet
       SecurityGroupIds:
         - !Ref AppSecurityGroup
       Tags:
@@ -51,12 +118,13 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          set -e
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
 
           apt-get update -y
           apt-get install -y openjdk-17-jre nginx
 
-          useradd -r -s /bin/false petclinic || true
+          id petclinic >/dev/null 2>&1 || useradd -r -s /bin/false petclinic
           mkdir -p /opt/petclinic
           chown -R petclinic:petclinic /opt/petclinic
 
@@ -101,7 +169,13 @@ Resources:
           systemctl enable --now nginx
 
 Outputs:
-  AppPublicIp:
+  VpcId:
+    Value: !Ref VPC
+  PublicSubnetId:
+    Value: !Ref PublicSubnet
+  InstancePrivateIp:
+    Value: !GetAtt AppInstance.PrivateIp
+  InstancePublicIp:
     Value: !GetAtt AppInstance.PublicIp
   AppUrl:
     Value: !Sub "http://${AppInstance.PublicIp}/"
