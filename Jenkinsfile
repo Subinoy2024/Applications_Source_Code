@@ -11,8 +11,8 @@ pipeline {
 
   parameters {
     string(name: 'AWS_REGION', defaultValue: 'ap-south-1', description: 'AWS region')
-    string(name: 'VpcCidr', defaultValue: '188.168.0.0/22', description: 'New VPC CIDR')
-    string(name: 'PublicSubnetCidr', defaultValue: '188.168.0.0/22', description: 'Public subnet CIDR')
+    string(name: 'VpcCidr', defaultValue: '10.20.0.0/16', description: 'New VPC CIDR')
+    string(name: 'PublicSubnetCidr', defaultValue: '10.20.0.0/24', description: 'Public subnet CIDR')
     string(name: 'AllowedSshCidr', defaultValue: '0.0.0.0/0', description: 'SSH allowed CIDR (use your public IP/32 ideally)')
     string(name: 'KeyName', defaultValue: 'aws_subinoy_ind', description: 'Existing EC2 KeyPair name')
     string(name: 'AmiId', defaultValue: 'ami-0ff5003538b60d5ec', description: 'Ubuntu AMI ID for this region (required)')
