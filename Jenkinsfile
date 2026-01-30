@@ -15,7 +15,7 @@ pipeline {
     string(name: 'PublicSubnetCidr', defaultValue: '192.168.0.0/22', description: 'Public subnet CIDR')
     string(name: 'AllowedSshCidr', defaultValue: '0.0.0.0/0', description: 'SSH allowed CIDR (use your public IP/32 ideally)')
     string(name: 'KeyName', defaultValue: 'aws_subinoy', description: 'Existing EC2 KeyPair name')
-    string(name: 'AmiId', defaultValue: '', description: 'Ubuntu AMI ID for this region (required)')
+    string(name: 'AmiId', defaultValue: 'ami-0ff5003538b60d5ec', description: 'Ubuntu AMI ID for this region (required)')
     string(name: 'InstanceType', defaultValue: 't2.micro', description: 'EC2 instance type')
   }
 
