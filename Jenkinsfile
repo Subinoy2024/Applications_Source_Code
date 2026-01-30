@@ -5,16 +5,19 @@ pipeline {
   environment {
     CFN_TEMPLATE = "cfn/ec2-nginx-app.yml"
     JAR_GLOB     = "target/*.jar"
-    STACK_NAME   = "petclinic-stack"
     AWS_REGION   = "${params.AWS_REGION ?: 'ap-south-1'}"
+    STACK_NAME   = "${params.STACK_NAME ?: 'petclinic-stack'}"
   }
 
   parameters {
     string(name: 'AWS_REGION', defaultValue: 'ap-south-1', description: 'AWS region')
-    string(name: 'VpcCidr', defaultValue: '10.20.0.0/16', description: 'New VPC CIDR')
-    string(name: 'PublicSubnetCidr', defaultValue: '10.20.0.0/24', description: 'Public subnet CIDR')
+    string(name: 'STACK_NAME', defaultValue: 'petclinic-stack', description: 'CloudFormation stack name')
+
+    string(name: 'VpcCidr', defaultValue: '10.20.0.0/16', description: 'New VPC CIDR (RFC1918 private range)')
+    string(name: 'PublicSubnetCidr', defaultValue: '10.20.0.0/24', description: 'Public subnet CIDR (inside VPC)')
     string(name: 'AllowedSshCidr', defaultValue: '0.0.0.0/0', description: 'SSH allowed CIDR (use your public IP/32 ideally)')
-    string(name: 'KeyName', defaultValue: 'aws_subinoy_ind', description: 'Existing EC2 KeyPair name')
+
+    string(name: 'KeyName', defaultValue: 'aws_subinoy_ind', description: 'Existing EC2 KeyPair name (region-specific)')
     string(name: 'AmiId', defaultValue: 'ami-0ff5003538b60d5ec', description: 'Ubuntu AMI ID for this region (required)')
     string(name: 'InstanceType', defaultValue: 't2.micro', description: 'EC2 instance type')
   }
@@ -83,7 +86,7 @@ pipeline {
       }
     }
 
-    stage("06 CloudFormation Deploy (Create VPC+Subnet+EC2)") {
+    stage("06 CloudFormation Deploy (Auto-heal ROLLBACK_COMPLETE)") {
       steps {
         withCredentials([usernamePassword(credentialsId: 'aws-creds',
                           usernameVariable: 'AWS_ACCESS_KEY_ID',
@@ -95,6 +98,22 @@ pipeline {
             test -f "${CFN_TEMPLATE}" || (echo "Missing template: ${CFN_TEMPLATE}" && exit 1)
             test -n "${AmiId}" || (echo "AmiId parameter is required (Ubuntu AMI)" && exit 1)
 
+            # --- AUTO-HEAL: if stack stuck in ROLLBACK_COMPLETE, delete & recreate ---
+            STACK_STATUS=$(aws cloudformation describe-stacks \
+              --stack-name "${STACK_NAME}" \
+              --query "Stacks[0].StackStatus" \
+              --output text 2>/dev/null || echo "NOT_FOUND")
+
+            echo "Current stack status: ${STACK_STATUS}"
+
+            if [ "${STACK_STATUS}" = "ROLLBACK_COMPLETE" ]; then
+              echo "Stack is in ROLLBACK_COMPLETE. Deleting stack ${STACK_NAME}..."
+              aws cloudformation delete-stack --stack-name "${STACK_NAME}"
+              aws cloudformation wait stack-delete-complete --stack-name "${STACK_NAME}"
+              echo "Old stack deleted successfully."
+            fi
+
+            # --- Deploy stack (create/update) ---
             aws cloudformation deploy \
               --stack-name "${STACK_NAME}" \
               --template-file "${CFN_TEMPLATE}" \
@@ -105,7 +124,14 @@ pipeline {
                 AllowedSshCidr="${AllowedSshCidr}" \
                 KeyName="${KeyName}" \
                 AmiId="${AmiId}" \
-                InstanceType="${InstanceType}"
+                InstanceType="${InstanceType}" \
+            || {
+              echo "CloudFormation failed. Showing failure events:"
+              aws cloudformation describe-stack-events --stack-name "${STACK_NAME}" \
+                --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED'].[Timestamp,LogicalResourceId,ResourceStatusReason]" \
+                --output table || true
+              exit 1
+            }
 
             echo "Stack deployed."
           '''
@@ -157,7 +183,6 @@ pipeline {
 
     stage("09 Deploy JAR to EC2 + Restart") {
       steps {
-        // ec2-ssh-key: add your aws_subinoy.pem here (Jenkins Credentials)
         withCredentials([sshUserPrivateKey(credentialsId: 'ec2-ssh-key',
                           keyFileVariable: 'SSH_KEY_FILE',
                           usernameVariable: 'SSH_USER')]) {
@@ -168,17 +193,15 @@ pipeline {
 
             chmod 600 "${SSH_KEY_FILE}"
 
-            # Copy jar
             scp -o StrictHostKeyChecking=no -i "${SSH_KEY_FILE}" \
               "${JAR_FILE}" "${SSH_USER}@${EC2_PUBLIC_IP}:/tmp/petclinic.jar"
 
-            # Move + permissions + restart
             ssh -o StrictHostKeyChecking=no -i "${SSH_KEY_FILE}" "${SSH_USER}@${EC2_PUBLIC_IP}" <<'EOF'
               set -e
               sudo mv /tmp/petclinic.jar /opt/petclinic/petclinic.jar
               sudo chown petclinic:petclinic /opt/petclinic/petclinic.jar
               sudo systemctl restart petclinic
-              sudo systemctl --no-pager --full status petclinic | head -n 30
+              sudo systemctl --no-pager --full status petclinic | head -n 40
 EOF
           '''
         }
