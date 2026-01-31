@@ -28,6 +28,11 @@ Parameters:
   InstanceType:
     Type: String
     Default: t3.micro
+    AllowedValues:
+      - t3.micro
+      - t3a.micro
+    Description: Free Tier eligible instance types only
+  
 
 Resources:
   VPC:
