@@ -32,11 +32,12 @@ pipeline {
 
     stage("02 Install Tools") {
       steps {
-        sh '''
+        sh '''#!/usr/bin/env bash
           set -e
           sudo -n apt-get update -y
           sudo -n apt-get install -y git maven curl unzip openssh-client netcat-openbsd ca-certificates jq
 
+          # AWS CLI v2 install in /tmp (no workspace pollution)
           if ! command -v aws >/dev/null 2>&1; then
             echo "Installing AWS CLI v2..."
             tmpdir="$(mktemp -d)"
@@ -59,7 +60,7 @@ pipeline {
         withCredentials([usernamePassword(credentialsId: 'aws-creds',
                           usernameVariable: 'AWS_ACCESS_KEY_ID',
                           passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
-          sh '''
+          sh '''#!/usr/bin/env bash
             set -e
             export AWS_DEFAULT_REGION="${AWS_REGION}"
             aws sts get-caller-identity
@@ -70,13 +71,16 @@ pipeline {
 
     stage("04 Unit Test") {
       steps {
-        sh 'mvn -q clean test'
+        sh '''#!/usr/bin/env bash
+          set -e
+          mvn -q clean test
+        '''
       }
     }
 
     stage("05 Build JAR") {
       steps {
-        sh '''
+        sh '''#!/usr/bin/env bash
           set -e
           mvn -q -DskipTests package
           ls -lh target/*.jar
@@ -89,13 +93,14 @@ pipeline {
         withCredentials([usernamePassword(credentialsId: 'aws-creds',
                           usernameVariable: 'AWS_ACCESS_KEY_ID',
                           passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
-          sh '''
+          sh '''#!/usr/bin/env bash
             set -euo pipefail
             export AWS_DEFAULT_REGION="${AWS_REGION}"
 
             test -f "${CFN_TEMPLATE}" || (echo "Missing template: ${CFN_TEMPLATE}" && exit 1)
             test -n "${AmiId}" || (echo "AmiId parameter is required (Ubuntu AMI)" && exit 1)
 
+            # --- AUTO-HEAL: if stack stuck in ROLLBACK_COMPLETE, delete & recreate ---
             STACK_STATUS=$(aws cloudformation describe-stacks \
               --stack-name "${STACK_NAME}" \
               --query "Stacks[0].StackStatus" \
@@ -110,8 +115,8 @@ pipeline {
               echo "Old stack deleted successfully."
             fi
 
-            # IMPORTANT: No InstanceType passed here.
-            # CloudFormation template controls it using Default + AllowedValues.
+            # IMPORTANT: Do NOT pass InstanceType here.
+            # CloudFormation template Default (t3.micro) + AllowedValues will control it safely.
             aws cloudformation deploy \
               --stack-name "${STACK_NAME}" \
               --template-file "${CFN_TEMPLATE}" \
@@ -124,7 +129,7 @@ pipeline {
                 KeyName="${KeyName}" \
                 AmiId="${AmiId}" \
             || {
-              echo "CloudFormation failed. Showing failure events:"
+              echo "CloudFormation failed."
 
               if aws cloudformation describe-stacks --stack-name "${STACK_NAME}" >/dev/null 2>&1; then
                 aws cloudformation describe-stack-events --stack-name "${STACK_NAME}" \
@@ -152,7 +157,7 @@ pipeline {
                           passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
           script {
             def ip = sh(
-              script: '''
+              script: '''#!/usr/bin/env bash
                 set -e
                 export AWS_DEFAULT_REGION="${AWS_REGION}"
                 aws cloudformation describe-stacks --stack-name "${STACK_NAME}" \
@@ -171,7 +176,7 @@ pipeline {
 
     stage("08 Wait for SSH") {
       steps {
-        sh '''
+        sh '''#!/usr/bin/env bash
           set -e
           echo "Waiting for SSH on ${EC2_PUBLIC_IP}:22 ..."
           for i in $(seq 1 60); do
@@ -192,7 +197,7 @@ pipeline {
         withCredentials([sshUserPrivateKey(credentialsId: 'ec2-ssh-key',
                           keyFileVariable: 'SSH_KEY_FILE',
                           usernameVariable: 'SSH_USER')]) {
-          sh '''
+          sh '''#!/usr/bin/env bash
             set -e
             JAR_FILE="$(ls -1 ${JAR_GLOB} | head -n 1)"
             echo "Deploying: ${JAR_FILE}"
@@ -205,8 +210,8 @@ pipeline {
             ssh -o StrictHostKeyChecking=no -i "${SSH_KEY_FILE}" "${SSH_USER}@${EC2_PUBLIC_IP}" <<'EOF'
               set -e
               sudo mkdir -p /opt/petclinic
-              sudo chown -R petclinic:petclinic /opt/petclinic || true
               sudo mv /tmp/petclinic.jar /opt/petclinic/petclinic.jar
+              sudo chown -R petclinic:petclinic /opt/petclinic || true
               sudo chown petclinic:petclinic /opt/petclinic/petclinic.jar
               sudo systemctl restart petclinic
               sudo systemctl --no-pager --full status petclinic | head -n 40
@@ -218,7 +223,7 @@ EOF
 
     stage("10 Health Check") {
       steps {
-        sh '''
+        sh '''#!/usr/bin/env bash
           set -e
           echo "Checking http://${EC2_PUBLIC_IP}/ ..."
           for i in $(seq 1 30); do
