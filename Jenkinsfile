@@ -13,12 +13,12 @@ pipeline {
     string(name: 'AWS_REGION', defaultValue: 'ap-south-1', description: 'AWS region')
     string(name: 'STACK_NAME', defaultValue: 'petclinic-stack', description: 'CloudFormation stack name')
 
-    string(name: 'VpcCidr', defaultValue: '10.20.0.0/16', description: 'New VPC CIDR (RFC1918 private range)')
-    string(name: 'PublicSubnetCidr', defaultValue: '10.20.0.0/24', description: 'Public subnet CIDR (inside VPC)')
-    string(name: 'AllowedSshCidr', defaultValue: '0.0.0.0/0', description: 'SSH allowed CIDR (use your public IP/32 ideally)')
+    string(name: 'VpcCidr', defaultValue: '10.20.0.0/16', description: 'VPC CIDR')
+    string(name: 'PublicSubnetCidr', defaultValue: '10.20.0.0/24', description: 'Public subnet CIDR')
+    string(name: 'AllowedSshCidr', defaultValue: '0.0.0.0/0', description: 'SSH allowed CIDR')
 
-    string(name: 'KeyName', defaultValue: 'aws_subinoy_ind', description: 'Existing EC2 KeyPair name (region-specific)')
-    string(name: 'AmiId', defaultValue: 'ami-0ff5003538b60d5ec', description: 'AMI ID for this region (required)')
+    string(name: 'KeyName', defaultValue: 'aws_subinoy_ind', description: 'EC2 KeyPair name')
+    string(name: 'AmiId', defaultValue: 'ami-0ff5003538b60d5ec', description: 'AMI ID (required)')
   }
 
   stages {
@@ -191,9 +191,9 @@ pipeline {
       }
     }
 
-    stage("09 Deploy JAR to EC2 + Restart") {
+    // ✅ UPDATED STAGE 09 (Option A) - creates petclinic user/service if missing
+    stage("09 Deploy JAR to EC2 + Restart (idempotent)") {
       steps {
-        // IMPORTANT: Update Jenkins credential ec2-ssh-key to use aws_subinoy_ind.pem and username ec2-user
         withCredentials([sshUserPrivateKey(credentialsId: 'ec2-ssh-key',
                           keyFileVariable: 'SSH_KEY_FILE')]) {
           sh '''#!/usr/bin/env bash
@@ -202,7 +202,6 @@ pipeline {
             echo "Deploying: ${JAR_FILE}"
 
             chmod 600 "${SSH_KEY_FILE}"
-
             SSH_LOGIN_USER="ec2-user"
 
             scp -o StrictHostKeyChecking=no -i "${SSH_KEY_FILE}" \
@@ -210,10 +209,40 @@ pipeline {
 
             ssh -o StrictHostKeyChecking=no -i "${SSH_KEY_FILE}" "${SSH_LOGIN_USER}@${EC2_PUBLIC_IP}" <<'EOF'
               set -e
+
+              # Ensure petclinic user exists
+              if ! id petclinic >/dev/null 2>&1; then
+                sudo useradd -r -s /bin/false petclinic
+              fi
+
+              # Ensure app directory exists
               sudo mkdir -p /opt/petclinic
               sudo mv /tmp/petclinic.jar /opt/petclinic/petclinic.jar
-              sudo chown -R petclinic:petclinic /opt/petclinic || true
-              sudo chown petclinic:petclinic /opt/petclinic/petclinic.jar
+              sudo chown -R petclinic:petclinic /opt/petclinic
+
+              # Ensure systemd service exists
+              if [ ! -f /etc/systemd/system/petclinic.service ]; then
+                sudo tee /etc/systemd/system/petclinic.service >/dev/null <<'SVC'
+[Unit]
+Description=Spring PetClinic Application
+After=network.target
+
+[Service]
+User=petclinic
+Group=petclinic
+WorkingDirectory=/opt/petclinic
+ExecStart=/usr/bin/java -jar /opt/petclinic/petclinic.jar
+SuccessExitStatus=143
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+SVC
+                sudo systemctl daemon-reload
+                sudo systemctl enable petclinic
+              fi
+
               sudo systemctl restart petclinic
               sudo systemctl --no-pager --full status petclinic | head -n 40
 EOF
