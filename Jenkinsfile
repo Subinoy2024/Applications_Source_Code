@@ -19,7 +19,10 @@ pipeline {
 
     string(name: 'KeyName', defaultValue: 'aws_subinoy_ind', description: 'Existing EC2 KeyPair name (region-specific)')
     string(name: 'AmiId', defaultValue: 'ami-0ff5003538b60d5ec', description: 'Ubuntu AMI ID for this region (required)')
-    string(name: 'InstanceType', defaultValue: 't2.micro', description: 'EC2 instance type')
+
+    // Keep parameter for flexibility, but default is now safe.
+    // NOTE: Not passed to CloudFormation deploy anymore (template default + AllowedValues used).
+    string(name: 'InstanceType', defaultValue: 't3.micro', description: 'EC2 instance type (template default/allowed values)')
   }
 
   stages {
@@ -92,7 +95,7 @@ pipeline {
                           usernameVariable: 'AWS_ACCESS_KEY_ID',
                           passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
           sh '''
-            set -e
+            set -euo pipefail
             export AWS_DEFAULT_REGION="${AWS_REGION}"
 
             test -f "${CFN_TEMPLATE}" || (echo "Missing template: ${CFN_TEMPLATE}" && exit 1)
@@ -114,6 +117,8 @@ pipeline {
             fi
 
             # --- Deploy stack (create/update) ---
+            # NOTE: We DO NOT pass InstanceType here.
+            # The template Default (t3.micro) + AllowedValues will control it safely.
             aws cloudformation deploy \
               --stack-name "${STACK_NAME}" \
               --template-file "${CFN_TEMPLATE}" \
@@ -124,16 +129,23 @@ pipeline {
                 AllowedSshCidr="${AllowedSshCidr}" \
                 KeyName="${KeyName}" \
                 AmiId="${AmiId}" \
-                InstanceType="${InstanceType}" \
             || {
               echo "CloudFormation failed. Showing failure events:"
-              aws cloudformation describe-stack-events --stack-name "${STACK_NAME}" \
-                --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED'].[Timestamp,LogicalResourceId,ResourceStatusReason]" \
-                --output table || true
+
+              if aws cloudformation describe-stacks --stack-name "${STACK_NAME}" >/dev/null 2>&1; then
+                aws cloudformation describe-stack-events --stack-name "${STACK_NAME}" \
+                  --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED'].[Timestamp,LogicalResourceId,ResourceStatusReason]" \
+                  --output table || true
+              else
+                echo "No stack exists yet (deploy failed before stack creation / changeset validation)."
+              fi
+
               exit 1
             }
 
             echo "Stack deployed."
+            aws cloudformation describe-stacks --stack-name "${STACK_NAME}" \
+              --query "Stacks[0].Outputs" --output table || true
           '''
         }
       }
