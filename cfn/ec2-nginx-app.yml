@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "PetClinic: CFN creates VPC/Subnet/IGW/Routes/SG/EC2 + Java17 + Nginx + systemd (No Docker)"
+Description: "PetClinic: CFN creates VPC/Subnet/IGW/Routes/SG/EC2 + Java17 + Nginx + systemd (Amazon Linux 2023)"
 
 Parameters:
   VpcCidr:
@@ -23,7 +23,7 @@ Parameters:
 
   AmiId:
     Type: AWS::EC2::Image::Id
-    Description: "Ubuntu AMI ID (same region as AWS_REGION)"
+    Description: "AMI ID in the same region (Amazon Linux 2023 recommended)"
 
   InstanceType:
     Type: String
@@ -123,15 +123,18 @@ Resources:
         Fn::Base64: !Sub |
           #!/bin/bash
           set -euxo pipefail
-          export DEBIAN_FRONTEND=noninteractive
 
-          apt-get update -y
-          apt-get install -y openjdk-17-jre nginx
+          # ===== Amazon Linux 2023 bootstrap =====
+          dnf -y update
+          dnf -y install java-17-amazon-corretto-headless nginx
 
-          id petclinic >/dev/null 2>&1 || useradd -r -s /bin/false petclinic
+          # Ensure petclinic user exists
+          id petclinic >/dev/null 2>&1 || useradd -r -s /sbin/nologin petclinic
+
           mkdir -p /opt/petclinic
           chown -R petclinic:petclinic /opt/petclinic
 
+          # Systemd service
           cat >/etc/systemd/system/petclinic.service <<'EOF'
           [Unit]
           Description=Spring PetClinic Application
@@ -153,7 +156,8 @@ Resources:
           systemctl daemon-reload
           systemctl enable petclinic
 
-          cat >/etc/nginx/sites-available/petclinic <<'EOF'
+          # Nginx reverse proxy to app on 8080
+          cat >/etc/nginx/conf.d/petclinic.conf <<'EOF'
           server {
               listen 80;
               server_name _;
@@ -167,8 +171,6 @@ Resources:
           }
           EOF
 
-          rm -f /etc/nginx/sites-enabled/default
-          ln -sf /etc/nginx/sites-available/petclinic /etc/nginx/sites-enabled/petclinic
           nginx -t
           systemctl enable --now nginx
 
