@@ -4,12 +4,12 @@ Description: "PetClinic: CFN creates VPC/Subnet/IGW/Routes/SG/EC2 + Java17 + Ngi
 Parameters:
   VpcCidr:
     Type: String
-    Default: "192.168.0.0/22"
+    Default: "10.20.0.0/16"
     Description: "CIDR for new VPC"
 
   PublicSubnetCidr:
     Type: String
-    Default: "192.168.0.0/22"
+    Default: "10.20.0.0/24"
     Description: "CIDR for public subnet inside VPC"
 
   AllowedSshCidr:
@@ -31,8 +31,7 @@ Parameters:
     AllowedValues:
       - t3.micro
       - t3a.micro
-    Description: Free Tier eligible instance types only
-  
+    Description: "Free Tier eligible instance types only"
 
 Resources:
   VPC:

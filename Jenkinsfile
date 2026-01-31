@@ -19,10 +19,6 @@ pipeline {
 
     string(name: 'KeyName', defaultValue: 'aws_subinoy_ind', description: 'Existing EC2 KeyPair name (region-specific)')
     string(name: 'AmiId', defaultValue: 'ami-0ff5003538b60d5ec', description: 'Ubuntu AMI ID for this region (required)')
-
-    // Keep parameter for flexibility, but default is now safe.
-    // NOTE: Not passed to CloudFormation deploy anymore (template default + AllowedValues used).
-    string(name: 'InstanceType', defaultValue: 't3.micro', description: 'EC2 instance type (template default/allowed values)')
   }
 
   stages {
@@ -41,7 +37,6 @@ pipeline {
           sudo -n apt-get update -y
           sudo -n apt-get install -y git maven curl unzip openssh-client netcat-openbsd ca-certificates jq
 
-          # AWS CLI v2 install in /tmp (no workspace pollution)
           if ! command -v aws >/dev/null 2>&1; then
             echo "Installing AWS CLI v2..."
             tmpdir="$(mktemp -d)"
@@ -101,7 +96,6 @@ pipeline {
             test -f "${CFN_TEMPLATE}" || (echo "Missing template: ${CFN_TEMPLATE}" && exit 1)
             test -n "${AmiId}" || (echo "AmiId parameter is required (Ubuntu AMI)" && exit 1)
 
-            # --- AUTO-HEAL: if stack stuck in ROLLBACK_COMPLETE, delete & recreate ---
             STACK_STATUS=$(aws cloudformation describe-stacks \
               --stack-name "${STACK_NAME}" \
               --query "Stacks[0].StackStatus" \
@@ -116,13 +110,13 @@ pipeline {
               echo "Old stack deleted successfully."
             fi
 
-            # --- Deploy stack (create/update) ---
-            # NOTE: We DO NOT pass InstanceType here.
-            # The template Default (t3.micro) + AllowedValues will control it safely.
+            # IMPORTANT: No InstanceType passed here.
+            # CloudFormation template controls it using Default + AllowedValues.
             aws cloudformation deploy \
               --stack-name "${STACK_NAME}" \
               --template-file "${CFN_TEMPLATE}" \
               --capabilities CAPABILITY_NAMED_IAM \
+              --no-fail-on-empty-changeset \
               --parameter-overrides \
                 VpcCidr="${VpcCidr}" \
                 PublicSubnetCidr="${PublicSubnetCidr}" \
@@ -210,6 +204,8 @@ pipeline {
 
             ssh -o StrictHostKeyChecking=no -i "${SSH_KEY_FILE}" "${SSH_USER}@${EC2_PUBLIC_IP}" <<'EOF'
               set -e
+              sudo mkdir -p /opt/petclinic
+              sudo chown -R petclinic:petclinic /opt/petclinic || true
               sudo mv /tmp/petclinic.jar /opt/petclinic/petclinic.jar
               sudo chown petclinic:petclinic /opt/petclinic/petclinic.jar
               sudo systemctl restart petclinic
@@ -246,4 +242,3 @@ EOF
     }
   }
 }
-########
